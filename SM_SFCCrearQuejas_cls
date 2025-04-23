@@ -1,0 +1,266 @@
+/*─────────────────────────────────────────────────────────────────────────────────────────────────┐
+* Clase de Métodos Momento2 SmartSupervision
+*
+* Esta clase contiene los métodos contemplados en el momento 2 de la integración, crear quejas en 
+* la SFC, cargar los archivos relacionados con cada queja
+* ──────────────────────────────────────────────────────────────────────────────────────────────────
+* @author         Quantics SAS
+* @version        1.0		2022-06-27
+* @version        2.0         2022-08-31		W-001200
+* @version        3.0         2022-09-16		W-001200
+* @version        4.0         2022-11-01		W-001273-1
+* @version        5.0         2023-10-13		W-001578
+* ────────────────────────────────────────────────────────────────────────────────────────────────── */
+public class SM_SFCCrearQuejas_cls {
+    public static Map<String, Map<String, SM_SFCHomologacionModeloDatos_cls>> constantes = SM_SFCHomologacion_CONSTANTES_cls.homologacion();
+    
+    public static Map<String, Object> httpRequestSFCCrearQuejas( Object queja, SM_Integracion_SFC__c config ) {
+        Map<String, String> params = new Map<String, String>();
+        Map<String, Object> reqResp = new Map<String, Object>();
+        
+        system.debug('token ' + config.Access_token__c);
+        params.put('servicio', 'SFCCrearQuejas');
+        params.put('statusCode', '201');
+        params.put('endPoint',  config.End_point_url__c + '/api/queja/');
+        params.put('httpMethod', 'POST');
+        params.put('Authorization', 'Bearer ' + config.Access_token__c);
+        params.put('content_type', 'application/json');
+        params.put('X-SFC-Signature', SM_SFCAutenticacion_cls.getSignature(JSON.serialize(queja, true)));
+        params.put('body', JSON.serialize(queja, true));
+        
+        reqResp = SM_SFCServiceCallout_cls.makeService(params);
+        
+        return reqResp;
+    } 
+    
+    @InvocableMethod(label='Crear Quejas en la SFC' description='Retorna la lista de IDs de las quejas radicadas en la SFC' category='Case')
+    public static List<Salidas> execute(List<Case> casos) {
+        //Tipo Archivo EXCEL EXCEL_X WORD WORD_X PDF PNG MP3 MP4 MSG
+        List<Map<String, Object>> lstMapLogIntegraciones = new List<Map<String, Object>>();
+        Map<String, SM_SFCHomologacionModeloDatos_cls> constSF = constantes.get('SALESFORCE');
+        List<Salidas> lstResultados = new List<Salidas>();
+        
+        SM_Integracion_SFC__c config =  SM_Integracion_SFC__c.getOrgDefaults();
+        Map<String, Object> responseMap = SM_SFCAutenticacion_cls.getToken(config);
+        if (responseMap.get('ReqResp') != null)
+          lstMapLogIntegraciones.add((Map<String, Object>) responseMap.get('ReqResp'));
+        config = (SM_Integracion_SFC__c) responseMap.get('Config');
+        
+        List<Id> lstCasoId = new List<Id>();
+        for(Case caso: casos) lstCasoId.add(caso.Id);
+        
+        //Obtener los archivos relacionados con el caso    
+        List<ContentDocumentLink> lstLinkDocumentosAct = [SELECT LinkedEntityId, ContentDocument.FileExtension, 
+                                                             ContentDocument.Title, ContentDocument.Description, 
+                                                             //ContentDocument.LatestPublishedVersion.VersionData,
+                                                       ContentDocument.LatestPublishedVersion.PathOnClient,
+                                                       ContentDocument.LatestPublishedVersion.Enviado_SFC__c,
+                                                       ContentDocument.LatestPublishedVersionId
+                                                       FROM ContentDocumentLink
+                                                       WHERE LinkedEntityId IN: lstCasoId AND 
+                                                       ContentDocument.LatestPublishedVersion.Enviado_SFC__c != true];
+        
+        Map<Id, ContentDocumentLink> mapDocumentosAct = new Map<Id, ContentDocumentLink>();
+        for(ContentDocumentLink link : lstLinkDocumentosAct) mapDocumentosAct.put(link.LinkedEntityId, link);
+        
+        
+        List<ContentVersion> lstDocumentosUpdate = new List<ContentVersion>();
+       
+        List<case> lstCasosToUpd = new List<case>(); //Actualizar caso mejora W-001273
+        for(Case caso : casos) {
+            Salidas resultado = new Salidas();
+            DateTime fechaCreacion = DateTime.now();
+          SM_SFCObjetos_cls.QuejaCrear queja = new SM_SFCObjetos_cls.QuejaCrear();
+            queja.tipo_entidad = (Integer) config.Tipo_entidad__c;
+            queja.entidad_cod = config.Codigo_entidad__c;
+            queja.codigo_queja = queja.tipo_entidad + config.Codigo_entidad__c + caso.CaseNumber;
+            queja.codigo_pais = String.valueOf(caso.SFC_CodigoPaisCuenta__c);
+          queja.departamento_cod = String.valueOf(Integer.valueOf(caso.SFC_CodigoDepartamentoCuenta__c)).leftPad(2, '0');
+            queja.municipio_cod = String.valueOf(Integer.valueOf(caso.SFC_CodigoCiudadCuenta__c)).leftPad(5, '0');
+            if(!Test.isRunningTest()) {
+                queja.producto_cod = constSF.get('Producto__c').homologacionesValores.get(caso.Producto__c) != null ? Integer.valueOf(constSF.get('Producto__c').homologacionesValores.get(caso.Producto__c)) : 198;
+                queja.macro_motivo_cod = constSF.get('Causa_raiz__c').homologacionesValores.get(caso.Causa_raiz__c) != null ? Integer.valueOf(constSF.get('Causa_raiz__c').homologacionesValores.get(caso.Causa_raiz__c)) : 199;
+            }
+            queja.fecha_creacion = fechaCreacion.format('yyyy-MM-dd HH:mm:ss');
+            queja.nombres = caso.SFC_NombreCuenta__c.abbreviate(50);
+            queja.tipo_id_CF = 1;
+            if(!Test.isRunningTest()) {
+              queja.tipo_id_CF = constSF.get('SM_TipoDocumento__c').homologacionesValores.get(caso.SFC_TipoIdentificacionCuenta__c) != null ? Integer.valueOf(constSF.get('SM_TipoDocumento__c').homologacionesValores.get(caso.SFC_TipoIdentificacionCuenta__c)) : 1;
+              queja.punto_recepcion = constSF.get('Origin').homologacionesValores.get(caso.Origin) != null ? Integer.valueOf(constSF.get('Origin').homologacionesValores.get(caso.Origin)) : 99;
+            }
+            queja.numero_id_CF = caso.SFC_NumeroIdentificacionCuenta__c;
+            queja.tipo_persona = caso.SFC_TipoPersonaCuenta__c != null? Integer.valueOf(caso.SFC_TipoPersonaCuenta__c) : 1;
+            queja.insta_recepcion = caso.SFC_InstanciaDeRecepcion__c != null? Integer.valueOf(caso.SFC_InstanciaDeRecepcion__c) : 9;
+            queja.admision = caso.SFC_Admision__c != null? Integer.valueOf(caso.SFC_Admision__c) : 9;
+            queja.texto_queja = caso.Description.replaceAll('[^a-zA-Z0-9+]', ' ').abbreviate(1000) ;
+            queja.ente_control = 99;
+            queja.canal_cod = caso.Canal_SFC__c != null? Integer.valueOf(caso.Canal_SFC__c) : 13;
+            Map<Id, ContentDocumentLink> mapDocumentos = mapDocumentosAct;
+            if (mapDocumentos.get(caso.Id) != null)
+                queja.anexo_queja = true;
+            else
+                queja.anexo_queja = false;
+            
+            responseMap = SM_SFCCrearQuejas_cls.httpRequestSFCCrearQuejas(queja, config);
+            lstMapLogIntegraciones.add(responseMap);
+            HttpResponse response = (HttpResponse) responseMap.get('response');
+          
+          system.debug('Queja momento 2: ' + queja);
+            if(response.getStatusCode() == 201) {
+                queja = queja.parse(response.getBody());
+                resultado.resultadoSFC = true;
+                resultado.radicadoSFC = queja.codigo_queja;
+               
+                //Enviar archivos          
+                for(ContentDocumentLink documento : lstLinkDocumentosAct) {
+                    if(documento.LinkedEntityId == caso.Id) {
+                        if(ValidarExtension(documento.ContentDocument.FileExtension)) {
+                            system.debug('Archivo a enviar: ' + documento.ContentDocument.LatestPublishedVersion.PathOnClient);
+                            system.debug('ContentDocumentId: ' + documento.ContentDocumentId);
+                            try {
+                                SM_SFCCrearQuejas_cls.httpRequestSFCCargarArchivo(queja.codigo_queja,
+                                                                                documento.ContentDocument.LatestPublishedVersion.PathOnClient ,
+                                                                                documento.ContentDocumentId, 
+                                                                                documento.ContentDocument.LatestPublishedVersionId);                           
+                            }catch (Exception e) {
+                                system.debug('error ' + e.getMessage());
+                            }
+                            
+                        }
+                    }
+                }
+                 //Actualizar caso mejora W-001273
+                caso.Codigo_de_la_Super__c = queja.codigo_queja; //Actualizar caso mejora W-001273                
+                caso.EstadoIntegracionSFC__c = '3';
+                caso.SFC_DatosActualizacinModificados__c = false;
+                
+                lstCasosToUpd.add(caso);//Actualizar caso mejora W-001273
+            }
+            else {
+                resultado.resultadoSFC = false;
+                
+                //Actualizar caso mejora W-001273
+                caso.EstadoIntegracionSFC__c = '6';
+                caso.SFC_DatosActualizacinModificados__c = false;
+                lstCasosToUpd.add(caso);//Actualizar caso mejora W-001273
+            }
+            lstResultados.add(resultado);
+        }
+        
+        //Actualizar caso mejora W-001273
+        If(!lstCasosToUpd.isempty()){
+            update lstCasosToUpd;
+        }//Actualizar caso mejora W-001273
+        
+        if (config.ActualizarConfig__c) {
+            config.ActualizarConfig__c = false;
+            update config;
+        }
+       /* if(lstDocumentosUpdate.size() > 0)
+          Database.update(lstDocumentosUpdate, false);*/
+        SM_SFCControlador_cls.CrearLogIntegraciones(lstMapLogIntegraciones);
+        system.debug('Resultado Creación: ' + lstResultados);
+        return lstResultados;
+    }
+    
+    @future(callout=true)
+    public static void httpRequestSFCCargarArchivo( String codigoQueja, String fileName, String fileContent, string idArchivo) {
+    	system.debug('codigoQueja+fileName: ' + codigoQueja + ' ' + fileName);
+        Map<String, Object> reqResp = new Map<String, Object>();
+        Map<String, String> objBody = new Map<String, String>();
+        objBody.put('type', fileName.substringAfterLast('.'));
+        objBody.put('codigo_queja', codigoQueja);
+        SM_Integracion_SFC__c config =  SM_Integracion_SFC__c.getOrgDefaults();
+        Map<String, Object> responseMap = SM_SFCAutenticacion_cls.getToken(config);
+		List<Map<String, Object>> lstMapLogIntegraciones = new List<Map<String, Object>>();
+        
+        config = (SM_Integracion_SFC__c) responseMap.get('Config');
+        
+        Blob formData = SM_HttpHexFormBuilder_cls.build()
+        .writeParam( 'codigo_queja', codigoQueja )
+        .writeParam( 'type', fileName.substringAfterLast('.') )
+        .writeFile( 'file', fileName, fileContent )
+        .getFormAsBlob();
+        
+        Http http = new Http();
+        HttpRequest request = new HttpRequest();
+        request.setEndpoint(config.End_point_url__c + '/api/storage/');
+        request.setMethod('POST');
+        request.setHeader('Authorization', 'Bearer ' + config.Access_token__c);
+        request.setHeader('content_type', 'application/json');
+        request.setHeader('X-SFC-Signature', SM_SFCAutenticacion_cls.getSignature(JSON.serialize(objBody)));
+        request.setHeader( 'Connection', 'keep-alive' );
+        request.setHeader( 'Content-Length', String.valueOf(formData.size()) );
+        request.setHeader( 'Content-Type', SM_HttpHexFormBuilder_cls.GetContentType() );
+        request.setHeader('Accept', '*/*');
+        request.setBodyAsBlob(formData);
+        
+        system.debug('Request: ' + request);
+        HttpResponse response = !test.isRunningTest() ? http.send(request) : new HttpResponse();
+        if (test.isRunningTest()) {
+            response.setStatusCode(201);
+            response.setBody('{}');
+        }
+        system.debug('Response : CargarArchivo' + response);
+        if(response.getStatusCode() != 201) {
+            System.debug('Error en el consumo CargarArchivo - código de estatus retornado: ' +
+                response.getStatusCode() + ' ' + response.getStatus());
+            System.debug('Mensaje error: ' + response.getBody());
+        } 
+        else {
+            System.debug('Consumo exitoso CargarArchivo - ' + response);
+            ContentVersion documentoUpdate = new ContentVersion();
+            documentoUpdate.Id = idArchivo;
+            documentoUpdate.Enviado_SFC__c = true;
+            update documentoUpdate;
+        }       
+        
+        request.setbody(fileName); 
+        reqResp.put('service', 'SFCCargarArchivo');
+        reqResp.put('request', request);
+        reqResp.put('response', response);
+        lstMapLogIntegraciones.add(reqResp);
+        SM_SFCControlador_cls.CrearLogIntegraciones(lstMapLogIntegraciones);
+    
+    }
+    
+    
+    public class Salidas {
+      @InvocableVariable(label='Radicado' description='Radicado de la SFC' required=true)
+      public String radicadoSFC;
+        @InvocableVariable(label='Resultado' description='Resultado de la integración con laSFC' required=true)
+      public Boolean resultadoSFC;
+    } 
+
+    public static Boolean ValidarExtension(String extension) {
+        Boolean result = false;
+        if (extension == null ){
+            //mejora W-001273
+        }else if (extension.equalsIgnoreCase('png')) {
+            result = true;
+        } else if (extension.equalsIgnoreCase('jpeg') || extension.equalsIgnoreCase('jpg')) {
+            result = true;
+        } else if (extension.equalsIgnoreCase('pgm')) {
+            result = true;
+        } else if (extension.equalsIgnoreCase('ppm')) {
+            result = true;            
+        } else if (extension.equalsIgnoreCase('pdf')) {
+            result = true;            
+        } else if (extension.equalsIgnoreCase('doc')) {
+            result = true;            
+        } else if (extension.equalsIgnoreCase('docx')) {
+            result = true;            
+        } else if (extension.equalsIgnoreCase('xls')) {
+            result = true;            
+        } else if (extension.equalsIgnoreCase('xlsx')) {
+            result = true;            
+        } else if (extension.equalsIgnoreCase('mp3')) {
+            result = true;            
+        } else if (extension.equalsIgnoreCase('mp4')) {
+            result = true;            
+        } else if (extension.equalsIgnoreCase('msg')) {
+            result = true;            
+        }
+        return result;
+    }   
+}
