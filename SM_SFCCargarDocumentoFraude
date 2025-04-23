@@ -1,0 +1,89 @@
+global class SM_SFCCargarDocumentoFraude implements Callable {
+    
+/*
+inputs - arguments - List<Object> of passed in arguments
+output - result - The result of the Function being called. Supports single Object values, List<Object> or Map<String, Object>
+*/  
+    
+    public Object call(String action, Map<String, Object> args){
+        Map<String, Object> input = (Map<String, Object>)args.get('input');
+        Map<String, Object> output = (Map<String, Object>)args.get('output');
+        Map<String, Object> options = (Map<String, Object>)args.get('options');
+        
+        return invokeMethod(action,input, output, options);
+    }
+    
+    global Object invokeMethod(String metodo, Map<String, Object> inputMap,Map<String, Object> outputMap,Map<String, Object> optionsMap){
+        
+        if(metodo=='cargarDocumento'){
+            
+            system.debug('input Map '+inputMap.get('input'));
+            system.debug('output Map '+outputMap);
+        	String casoId = (String)inputMap.get('id');
+            String causaRaiz = (String)inputMap.get('causaRaiz');
+            String codigoSuper = (String)inputMap.get('codigoSuper');
+        	system.debug('caso en metodo '+casoId);
+            system.debug('codigosuper en metodo '+codigoSuper);
+            if(casoId==null){
+                outputMap.put('cargado', 'FAIL');
+                outputMap.put('respuestaText', 'Error no se encuentra el caso');
+                return '';
+            }
+            if(!SM_SFCActualizarQuejas_cls.validarCausaRaizFraude(causaRaiz)){
+                outputMap.put('cargado', 'FAIL');
+                outputMap.put('respuestaText', 'Para enviar un documento de fraude el caso debe estar marcado con causa raiz relacionada con fraude');
+                return '';
+            }
+        
+            List<ContentDocumentLink> lstLinkDocumentosFraude = [SELECT LinkedEntityId, ContentDocument.FileExtension, 
+                                                                 ContentDocument.Title, ContentDocument.Description, 
+                                                                 ContentDocument.LatestPublishedVersion.PathOnClient,
+                                                                 ContentDocument.LatestPublishedVersion.Enviado_SFC__c,
+                                                                 ContentDocument.LatestPublishedVersionId
+                                                                 FROM ContentDocumentLink
+                                                                 WHERE LinkedEntityId =: casoId AND 
+                                                                 ContentDocument.LatestPublishedVersion.Enviado_SFC__c != true and
+                                                                 ContentDocument.Title LIKE '%INV_FRAUDE_SFC'];
+            if(lstLinkDocumentosFraude.size() == 0){
+                system.debug('encuentra documento');
+                outputMap.put('error', 'FAIL');
+                outputMap.put('respuestaText', 'No se encontro ningun documento con la nomenclatura INV_FRAUDE_SFC, recuerde cargar el documento en la seccion de archivos del caso antes de intentar enviarlo a la SFC');
+            	return '';
+            }
+            else{
+                //Enviar archivos
+                List<ContentDocumentLink> lstLinkDocumentos = lstLinkDocumentosFraude;
+                for(ContentDocumentLink documento : lstLinkDocumentos) {
+                   
+                    if(SM_SFCCrearQuejas_cls.ValidarExtension(documento.ContentDocument.FileExtension)) {
+                        system.debug('Lugar Archivo a enviar: ' + documento.ContentDocument.LatestPublishedVersion.PathOnClient); 
+                        system.debug('documento.ContentDocumentId: ' + documento.ContentDocumentId); 
+                        try{
+                            if (!test.isRunningTest()){
+                                SM_SFCCrearQuejas_cls.httpRequestSFCCargarArchivo(codigoSuper, 
+                                                                              documento.ContentDocument.LatestPublishedVersion.PathOnClient, 
+                                                                              documento.ContentDocumentId,
+                                                                              documento.ContentDocument.LatestPublishedVersionId);
+                            }
+                            
+                        }catch (Exception e) {
+                            system.debug('error ' + e.getMessage());
+                            outputMap.put('error', 'FAIL');
+                            outputMap.put('respuestaText', 'Ocurrió un error al momento de cargar el archivo '+ e.getMessage());
+                            return '';
+                                        
+                        }
+                    }
+                    
+                }
+                outputMap.put('cargado', 'OK');        
+                outputMap.put('respuestaText', 'Documento cargado en la SFC');
+                return '';
+            }
+		
+          }
+        return '';
+    }
+    
+    
+}
